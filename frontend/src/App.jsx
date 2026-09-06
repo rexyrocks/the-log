@@ -1,5 +1,5 @@
 import { useMemo, useState, useEffect } from 'react'
-import { Activity, Archive, ArrowUpRight, BookOpen, ChevronDown, ChevronRight, CircleHelp, FileText, LayoutGrid, Link2, Menu, Plus, Search, Settings2, SlidersHorizontal, Users, X, Lock, Trash2 } from 'lucide-react'
+import { Activity, ArrowUpRight, BookOpen, ChevronDown, ChevronRight, CircleHelp, FileText, LayoutGrid, Link2, Menu, Plus, Search, Settings2, SlidersHorizontal, Users, X, Lock, Trash2, Shield, User } from 'lucide-react'
 import './App.css'
 
 const phases = [
@@ -13,6 +13,29 @@ const phases = [
 ]
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+
+// Helper: get a smart time-of-day greeting
+function getGreeting() {
+  const h = new Date().getHours()
+  if (h < 12) return 'Good morning'
+  if (h < 17) return 'Good afternoon'
+  return 'Good evening'
+}
+
+// Helper: format "created_at" to relative time
+function timeAgo(dateStr) {
+  if (!dateStr) return 'Recently'
+  const diff = Date.now() - new Date(dateStr).getTime()
+  const mins = Math.floor(diff / 60000)
+  if (mins < 1) return 'Just now'
+  if (mins < 60) return `${mins}m ago`
+  const hrs = Math.floor(mins / 60)
+  if (hrs < 24) return `${hrs}h ago`
+  const days = Math.floor(hrs / 24)
+  if (days === 1) return 'Yesterday'
+  if (days < 7) return `${days}d ago`
+  return new Date(dateStr).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })
+}
 
 function LockScreen({ onUnlock }) {
   const [inputPin, setInputPin] = useState('')
@@ -67,7 +90,7 @@ function LockScreen({ onUnlock }) {
 }
 
 function App() {
-  const [activeTab, setActiveTab] = useState('Scoping & Data Recon')
+  const [activeTab, setActiveTab] = useState('overview')
   
   // Auth state
   const [pin, setPin] = useState(localStorage.getItem('fieldnotes_pin') || '')
@@ -75,8 +98,9 @@ function App() {
   const [authChecked, setAuthChecked] = useState(false)
   const [currentUser, setCurrentUser] = useState(localStorage.getItem('fieldnotes_user') || '')
 
-  // Data states
+  // Data states — allFindings holds everything for overview stats
   const [findings, setFindings] = useState([])
+  const [allFindings, setAllFindings] = useState([])
   const [team, setTeam] = useState([])
   
   // Network states
@@ -94,6 +118,20 @@ function App() {
   
   const selectedPhase = phases.find((phase) => phase[0] === activeTab)
   const activeSlug = selectedPhase ? selectedPhase[3] : null
+
+  // Current user role
+  const enrichedTeam = useMemo(() => {
+    return team.map(member => ({
+      ...member,
+      role: member.lane || member.role,
+      initials: member.initials || member.name.split(' ').map(p => p[0]).join('').slice(0, 2).toUpperCase(),
+      status: member.status || 'online',
+      color: member.color || 'violet'
+    }))
+  }, [team])
+
+  const currentMember = useMemo(() => enrichedTeam.find(t => t.name === currentUser), [enrichedTeam, currentUser])
+  const isAdmin = currentMember && currentMember.role && currentMember.role.toLowerCase().includes('admin')
 
   // 1. Fetch Team/Roles on mount and verify auth
   useEffect(() => {
@@ -126,7 +164,22 @@ function App() {
     fetchTeam()
   }, [pin])
 
-  // 2. Fetch Findings whenever activeTab changes
+  // 2. Fetch ALL findings once for overview stats
+  useEffect(() => {
+    if (!isAuthenticated) return
+    const fetchAll = async () => {
+      try {
+        const res = await fetch(`${API_URL}/api/findings`, { headers: { 'x-access-pin': pin } })
+        if (res.ok) {
+          const data = await res.json()
+          setAllFindings(data)
+        }
+      } catch (_) { /* silent — overview stats are best-effort */ }
+    }
+    fetchAll()
+  }, [isAuthenticated, pin])
+
+  // 3. Fetch Findings whenever activeTab changes
   useEffect(() => {
     if (!isAuthenticated) return;
     const fetchFindings = async () => {
@@ -154,16 +207,6 @@ function App() {
     fetchFindings()
   }, [activeSlug, isAuthenticated, pin])
 
-  const enrichedTeam = useMemo(() => {
-    return team.map(member => ({
-      ...member,
-      role: member.lane || member.role,
-      initials: member.initials || member.name.split(' ').map(p => p[0]).join('').slice(0, 2).toUpperCase(),
-      status: member.status || 'online',
-      color: member.color || 'violet'
-    }))
-  }, [team])
-
   const visibleFindings = useMemo(() => {
     return findings.filter((finding) => {
       const isCorrectPhase = activeTab === 'overview' ? true : finding.phase === activeSlug;
@@ -176,7 +219,14 @@ function App() {
 
   const selectTab = (tab) => { setActiveTab(tab); setSearch(''); setMobileNav(false) }
 
-  // 3. POST new finding
+  // Compute dynamic progress: % of phases that have at least 1 finding
+  const phasesWithFindings = useMemo(() => {
+    const filled = new Set(allFindings.map(f => f.phase))
+    return filled.size
+  }, [allFindings])
+  const progressPercent = Math.round((phasesWithFindings / phases.length) * 100)
+
+  // POST new finding
   const addFinding = async (event) => {
     event.preventDefault()
     if (!form.title.trim() || !form.body.trim()) return
@@ -201,6 +251,7 @@ function App() {
       const savedFinding = await res.json()
       
       setFindings([savedFinding, ...findings])
+      setAllFindings([savedFinding, ...allFindings])
       setForm({ title: '', body: '', author: currentUser || (enrichedTeam.length > 0 ? enrichedTeam[0].name : ''), tags: '' })
       setComposer(false)
     } catch (err) {
@@ -208,10 +259,10 @@ function App() {
     }
   }
 
-  // 4. DELETE finding
+  // DELETE finding
   const deleteFinding = async (id) => {
     if (!currentUser) {
-      alert("Please select a user profile in the top right to delete findings.");
+      alert("Please select your user profile in the top right to delete findings.");
       return;
     }
     if (!confirm("Are you sure you want to delete this finding? This cannot be undone.")) return;
@@ -225,12 +276,13 @@ function App() {
         return
       }
       if (res.status === 403) {
-        alert("You are not authorized to delete this finding. You can only delete your own findings unless you are an Admin.");
+        alert("You can only delete your own findings. Admins can delete anyone's.");
         return;
       }
       if (!res.ok) throw new Error('Failed to delete finding');
       
       setFindings(findings.filter(f => f.id !== id));
+      setAllFindings(allFindings.filter(f => f.id !== id));
     } catch(err) {
       alert("Error deleting finding: " + err.message);
     }
@@ -257,8 +309,7 @@ function App() {
           /> 
           {errorFindings || errorTeam ? 'Disconnected' : loadingFindings || loadingTeam ? 'Syncing...' : 'Synced'}
         </span>
-        <button className="icon-button" aria-label="Help"><CircleHelp size={18} /></button>
-        <button className="icon-button" onClick={() => { localStorage.removeItem('fieldnotes_pin'); setPin(''); setIsAuthenticated(false); }} aria-label="Lock" title="Lock App"><Lock size={18} /></button>
+        <button className="icon-button" onClick={() => { localStorage.removeItem('fieldnotes_pin'); localStorage.removeItem('fieldnotes_user'); setPin(''); setCurrentUser(''); setIsAuthenticated(false); }} aria-label="Lock" title="Lock & Sign Out"><Lock size={18} /></button>
         
         <select 
           value={currentUser} 
@@ -270,11 +321,11 @@ function App() {
           style={{ background: 'transparent', border: 'none', fontWeight: '600', fontSize: '0.9rem', color: 'var(--text-main)', outline: 'none', cursor: 'pointer', marginLeft: '0.5rem' }}
         >
           <option value="">Select User</option>
-          {enrichedTeam.map(member => <option key={member.name} value={member.name}>{member.name}</option>)}
+          {enrichedTeam.map(member => <option key={member.name} value={member.name}>{member.name}{member.role?.toLowerCase().includes('admin') ? ' ★' : ''}</option>)}
         </select>
         {currentUser && (
-          <span className={`avatar small ${enrichedTeam.find(m => m.name === currentUser)?.color || 'gray'}`}>
-            {enrichedTeam.find(m => m.name === currentUser)?.initials || currentUser.slice(0, 2).toUpperCase()}
+          <span className={`avatar small ${currentMember?.color || 'gray'}`}>
+            {currentMember?.initials || currentUser.slice(0, 2).toUpperCase()}
           </span>
         )}
       </div>
@@ -292,26 +343,25 @@ function App() {
             <button key={label} className={`phase-item ${activeTab === label ? 'active' : ''}`} onClick={() => selectTab(label)}>
               <span className={`phase-icon ${color}`}>{short}</span>
               <span>{label}</span>
-              <span className="phase-count">{findings.filter((finding) => finding.phase === slug).length || ''}</span>
+              <span className="phase-count">{allFindings.filter((f) => f.phase === slug).length || ''}</span>
             </button>
           ))}
         </nav>
         
         <div className="sidebar-bottom">
-          <button className="nav-item"><Archive size={16} /> Archived</button>
           <div className="project-meter">
-            <div><span>Project progress</span><strong>34%</strong></div>
-            <div className="meter-track"><span /></div>
-            <small>7 phases · {findings.length} findings</small>
+            <div><span>Project coverage</span><strong>{progressPercent}%</strong></div>
+            <div className="meter-track"><span style={{ width: `${progressPercent}%` }} /></div>
+            <small>{phasesWithFindings} of {phases.length} phases active · {allFindings.length} findings</small>
           </div>
         </div>
       </aside>
       
       <main className="main-content">
         {activeTab === 'overview' ? (
-          <Overview findings={findings} selectTab={selectTab} loading={loadingFindings} currentUser={currentUser} />
+          <Overview allFindings={allFindings} team={enrichedTeam} selectTab={selectTab} loading={loadingFindings} currentUser={currentUser} progressPercent={progressPercent} phasesWithFindings={phasesWithFindings} />
         ) : activeTab === 'Team & Roles' ? (
-          <TeamView team={enrichedTeam} setTeam={setTeam} loading={loadingTeam} error={errorTeam} pin={pin} setIsAuthenticated={setIsAuthenticated} currentUser={currentUser} />
+          <TeamView team={enrichedTeam} setTeam={setTeam} loading={loadingTeam} error={errorTeam} pin={pin} setIsAuthenticated={setIsAuthenticated} currentUser={currentUser} isAdmin={isAdmin} />
         ) : (
           <>
             <div className="content-header">
@@ -358,12 +408,12 @@ function App() {
                   <p>Check your connection or make sure the backend is running. ({errorFindings})</p>
                 </div>
               ) : visibleFindings.length ? (
-                visibleFindings.map((finding) => <FindingCard key={finding.id || Math.random()} finding={finding} team={enrichedTeam} currentUser={currentUser} deleteFinding={deleteFinding} />)
+                visibleFindings.map((finding) => <FindingCard key={finding.id || Math.random()} finding={finding} team={enrichedTeam} currentUser={currentUser} isAdmin={isAdmin} deleteFinding={deleteFinding} />)
               ) : (
                 <div className="empty-state">
                   <FileText size={28} />
-                  <h3>No findings match</h3>
-                  <p>Try a different search or add the first note for this phase.</p>
+                  <h3>No findings yet</h3>
+                  <p>Click "Add finding" to log the first note for this phase.</p>
                 </div>
               )}
             </div>
@@ -399,15 +449,13 @@ function App() {
   </div>
 }
 
-function FindingCard({ finding, team, currentUser, deleteFinding }) { 
+function FindingCard({ finding, team, currentUser, isAdmin, deleteFinding }) { 
   const authorName = finding.contributor || finding.author || 'Unknown';
   const author = team.find(t => t.name === authorName) || {};
   const initials = author.initials || authorName.substring(0, 2).toUpperCase();
   const color = author.color || 'gray';
-  const time = finding.time || 'Recently';
+  const time = timeAgo(finding.created_at);
   
-  const currentMember = team.find(t => t.name === currentUser);
-  const isAdmin = currentMember && currentMember.role && currentMember.role.toLowerCase().includes('admin');
   const canDelete = currentUser === authorName || isAdmin;
 
   let tags = [];
@@ -419,64 +467,81 @@ function FindingCard({ finding, team, currentUser, deleteFinding }) {
       <div className="finding-meta">
         <span className={`avatar ${color}`}>{initials}</span>
         <span><strong>{authorName}</strong><small>{time}</small></span>
-        {canDelete ? (
-          <button className="icon-button" onClick={() => deleteFinding(finding.id)} aria-label="Delete finding" style={{ marginLeft: 'auto', color: 'var(--text-muted)' }}>
+        {canDelete && (
+          <button className="icon-button" onClick={() => deleteFinding(finding.id)} aria-label="Delete finding" title="Delete this finding" style={{ marginLeft: 'auto', color: 'var(--text-muted)' }}>
             <Trash2 size={16} />
           </button>
-        ) : (
-          <button className="card-more" aria-label="More options" style={{ marginLeft: 'auto' }}>···</button>
         )}
       </div>
       <h2>{finding.title}</h2>
       <p>{finding.body}</p>
-      <div className="card-footer">
-        <div className="tags">{tags.map((tag) => <span key={tag}>{tag}</span>)}</div>
-        <button className="link-button"><Link2 size={14} /> Copy link</button>
-      </div>
+      {tags.length > 0 && (
+        <div className="card-footer">
+          <div className="tags">{tags.map((tag) => <span key={tag}>{tag}</span>)}</div>
+        </div>
+      )}
     </article>
   )
 }
 
-function Overview({ findings, selectTab, loading, currentUser }) { 
+function Overview({ allFindings, team, selectTab, loading, currentUser, progressPercent, phasesWithFindings }) {
+  // Compute which phases have findings, sorted by most recent
+  const phaseActivity = useMemo(() => {
+    return phases.map(([label, short, color, slug]) => {
+      const phaseFindings = allFindings.filter(f => f.phase === slug)
+      const latest = phaseFindings.length > 0 ? phaseFindings[0].created_at : null
+      return { label, short, color, slug, count: phaseFindings.length, latest }
+    }).sort((a, b) => {
+      if (!a.latest && !b.latest) return 0
+      if (!a.latest) return 1
+      if (!b.latest) return -1
+      return new Date(b.latest) - new Date(a.latest)
+    })
+  }, [allFindings])
+
+  // Count unique contributors
+  const uniqueContributors = useMemo(() => {
+    return new Set(allFindings.map(f => f.contributor)).size
+  }, [allFindings])
+
   return (
     <div className="overview">
       <div className="content-header">
         <div>
           <div className="eyebrow"><span className="pulse-dot" /> Team workspace</div>
-          <h1>Good morning, {currentUser ? currentUser.split(' ')[0] : 'Team'}</h1>
-          <p className="subtitle">Here is where the heatwave prototype stands today.</p>
+          <h1>{getGreeting()}, {currentUser ? currentUser.split(' ')[0] : 'Team'}</h1>
+          <p className="subtitle">Here is where the heatwave early-warning prototype stands today.</p>
         </div>
-        <button className="secondary-button"><Archive size={16} /> Export log</button>
       </div>
       <div className="overview-grid">
         <div className="overview-feature">
-          <div className="feature-top"><span className="feature-kicker">Active sprint</span><span>Sep 01 — Sep 14</span></div>
-          <h2>Make the warning engine legible</h2>
-          <p>Connect the climate model output to language a district officer can act on in under a minute.</p>
+          <div className="feature-top"><span className="feature-kicker">Project coverage</span><span>{phasesWithFindings} / {phases.length} phases</span></div>
+          <h2>Research progress</h2>
+          <p>{phasesWithFindings === 0 ? 'No findings logged yet. Start by adding your first research note to a phase.' : `${phasesWithFindings} of ${phases.length} phases have documented findings. ${phases.length - phasesWithFindings} still need attention.`}</p>
           <div className="feature-progress">
-            <span><strong>3</strong> of 8 sprint tasks complete</span>
-            <div className="meter-track"><span /></div>
+            <span><strong>{progressPercent}%</strong> phase coverage</span>
+            <div className="meter-track"><span style={{ width: `${progressPercent}%` }} /></div>
           </div>
         </div>
         <div className="stat-card">
           <span>All findings</span>
-          <strong>{loading ? '...' : findings.length}</strong>
-          <small>+4 this week</small>
+          <strong>{loading ? '...' : allFindings.length}</strong>
+          <small>Across {phasesWithFindings} phases</small>
         </div>
         <div className="stat-card">
-          <span>Open questions</span>
-          <strong>06</strong>
-          <small className="muted">Across 4 phases</small>
+          <span>Contributors</span>
+          <strong>{loading ? '...' : uniqueContributors}</strong>
+          <small>{team.length} team members</small>
         </div>
       </div>
-      <div className="section-heading"><h2>Continue in a phase</h2><span>Most recently active</span></div>
+      <div className="section-heading"><h2>All phases</h2><span>Sorted by recent activity</span></div>
       <div className="phase-overview-list">
-        {phases.slice(0, 4).map(([label, short, color, slug]) => (
+        {phaseActivity.map(({ label, short, color, count, latest }) => (
           <button key={label} onClick={() => selectTab(label)}>
             <span className={`phase-icon ${color}`}>{short}</span>
             <span>
               <strong>{label}</strong>
-              <small>{loading ? '...' : findings.filter((finding) => finding.phase === slug).length} findings · updated today</small>
+              <small>{loading ? '...' : count} {count === 1 ? 'finding' : 'findings'}{latest ? ` · last updated ${timeAgo(latest)}` : ' · no findings yet'}</small>
             </span>
             <ChevronRight size={17} />
           </button>
@@ -486,14 +551,13 @@ function Overview({ findings, selectTab, loading, currentUser }) {
   ) 
 }
 
-function TeamView({ team, setTeam, loading, error, pin, setIsAuthenticated, currentUser }) { 
+function TeamView({ team, setTeam, loading, error, pin, setIsAuthenticated, currentUser, isAdmin }) { 
   const [newMember, setNewMember] = useState({ name: '', role: '' })
   const [adding, setAdding] = useState(false)
   
-  const currentMember = team.find(t => t.name === currentUser);
-  const isAdmin = team.length === 0 || (currentMember && currentMember.role && currentMember.role.toLowerCase().includes('admin'));
+  const canManageTeam = team.length === 0 || isAdmin
 
-  // 5. POST new team role
+  // POST new team role
   const addMember = async (event) => { 
     event.preventDefault(); 
     if (!newMember.name.trim()) return; 
@@ -509,7 +573,7 @@ function TeamView({ team, setTeam, loading, error, pin, setIsAuthenticated, curr
         return
       }
       if (res.status === 403) {
-        alert("You are not authorized to add team members. Only admins can do this.");
+        alert("Only admins can add team members. Select an Admin profile from the top-right dropdown.");
         return;
       }
       if (!res.ok) throw new Error('Failed to add role')
@@ -532,15 +596,22 @@ function TeamView({ team, setTeam, loading, error, pin, setIsAuthenticated, curr
           <h1>Team & Roles</h1>
           <p className="subtitle">Keep the lanes clear so findings always have an owner.</p>
         </div>
-        {isAdmin && (
+        {canManageTeam && (
           <button className="primary-button" onClick={() => document.querySelector('.team-form input')?.focus()}><Plus size={17} /> Add teammate</button>
         )}
       </div>
+
+      {!currentUser && (
+        <div style={{ background: '#fef3cd', border: '1px solid #ffc107', borderRadius: '6px', padding: '12px 16px', marginBottom: '20px', fontSize: '12px', color: '#856404' }}>
+          ⚠️ Select your profile from the top-right dropdown to see admin controls.
+        </div>
+      )}
+
       <section className="team-card">
         <div className="team-card-heading">
           <div>
             <h2>Project crew</h2>
-            <p>{team.length} people sharing this log</p>
+            <p>{team.length} {team.length === 1 ? 'person' : 'people'} sharing this log</p>
           </div>
           <span className="team-avatars">
             {team.slice(0, 4).map((member) => (
@@ -557,24 +628,40 @@ function TeamView({ team, setTeam, loading, error, pin, setIsAuthenticated, curr
            <div className="empty-state" style={{ padding: '2rem' }}>
             <p style={{ color: 'coral' }}>Error loading team: {error}</p>
           </div>
+        ) : team.length === 0 ? (
+          <div className="empty-state" style={{ padding: '2rem' }}>
+            <Users size={28} />
+            <h3>No team members yet</h3>
+            <p>Add the first person below to get started. The first member can be an Admin.</p>
+          </div>
         ) : (
           <div className="team-list">
             {team.map((member) => (
               <div className="team-row" key={member.name}>
                 <span className={`avatar ${member.color}`}>{member.initials}</span>
-                <div><strong>{member.name}</strong><small>{member.role}</small></div>
-                <span className={`presence ${member.status}`}><i /> {member.status}</span>
-                <button className="icon-button" aria-label={`Edit ${member.name}`}><Settings2 size={16} /></button>
+                <div>
+                  <strong>{member.name}</strong>
+                  <small style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    {member.role?.toLowerCase().includes('admin') ? <Shield size={10} /> : <User size={10} />}
+                    {member.role || 'No role assigned'}
+                  </small>
+                </div>
+                {member.role?.toLowerCase().includes('admin') && (
+                  <span style={{ fontSize: '9px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '.08em', color: '#b45309', background: '#fef3cd', padding: '2px 8px', borderRadius: '10px', marginLeft: 'auto' }}>Admin</span>
+                )}
+                {!member.role?.toLowerCase().includes('admin') && (
+                  <span style={{ fontSize: '9px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '.08em', color: '#4b7a5e', background: '#e8f5e9', padding: '2px 8px', borderRadius: '10px', marginLeft: 'auto' }}>Member</span>
+                )}
               </div>
             ))}
           </div>
         )}
       </section>
-      {isAdmin && (
+      {canManageTeam && (
         <form className="team-form" onSubmit={addMember}>
           <div><span className="eyebrow">Quick add</span><h2>Bring someone in</h2></div>
           <input value={newMember.name} onChange={(event) => setNewMember({ ...newMember, name: event.target.value })} placeholder="Teammate name" disabled={adding} />
-          <input value={newMember.role} onChange={(event) => setNewMember({ ...newMember, role: event.target.value })} placeholder="Role or lane" disabled={adding} />
+          <input value={newMember.role} onChange={(event) => setNewMember({ ...newMember, role: event.target.value })} placeholder='Role (e.g. "Admin" or "Member")' disabled={adding} />
           <button className="secondary-button" type="submit" disabled={adding}>
             {adding ? <Activity size={16} /> : <Plus size={16} />} 
             {adding ? ' Adding...' : ' Add'}
