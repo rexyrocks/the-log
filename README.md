@@ -35,14 +35,14 @@ curl -X POST http://localhost:3000/api/findings \
 ## Deploy to Railway
 
 1. Push this repository to GitHub and create a new Railway project from the repository.
-2. Create a service for the repository and set its **Root Directory** to `backend`.
+2. Create a service for the repository and leave its **Root Directory** as the repository root. The root `package.json` and `railway.json` are configured to start `backend/server.js`.
 3. Add a Railway Volume to that service with mount path `/data`.
 4. Set these variables in the backend service:
    - `DATABASE_PATH=/data/fieldnotes.db`
    - `FRONTEND_URL=https://your-frontend-domain.example`
    - `PORT` is injected by Railway; do not hard-code it.
 5. Deploy. Railway uses `backend/railway.json` or the `npm start` script automatically.
-6. Copy the generated public backend URL, for example `https://fieldnotes-api-production.up.railway.app`, and set `VITE_API_URL` in the frontend deployment to that URL.
+6. Trigger a redeploy. Copy the generated public backend URL, for example `https://fieldnotes-api-production.up.railway.app`, and set `VITE_API_URL` in the frontend deployment to that URL.
 
 The volume is important: Railway's container filesystem is ephemeral, while `/data/fieldnotes.db` survives redeploys when the volume remains attached.
 
