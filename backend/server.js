@@ -7,6 +7,7 @@ import Database from 'better-sqlite3'
 
 const PORT = Number(process.env.PORT || 3000)
 const DATABASE_PATH = process.env.DATABASE_PATH || './data/fieldnotes.db'
+const ACCESS_PIN = process.env.ACCESS_PIN
 const PHASES = new Set(['scoping', 'wbgt-utci', 'ml-model', 'backend-postgis', 'dashboard', 'alert-api', 'integration'])
 
 const databaseDirectory = path.dirname(DATABASE_PATH)
@@ -43,6 +44,17 @@ app.use(cors({
 }))
 app.use(express.json({ limit: '100kb' }))
 
+// Authentication Middleware
+app.use((request, response, next) => {
+  if (!ACCESS_PIN) return next() // If no pin is configured on the backend, skip auth
+  if (request.path === '/health') return next()
+  
+  const providedPin = request.headers['x-access-pin']
+  if (providedPin === ACCESS_PIN) return next()
+  
+  return response.status(401).json({ error: 'Unauthorized: Invalid PIN' })
+})
+
 const findingRow = (row) => ({ ...row, tags: JSON.parse(row.tags || '[]') })
 const roleRow = (row) => ({ ...row })
 const text = (value) => typeof value === 'string' ? value.trim() : ''
@@ -71,12 +83,45 @@ app.post('/api/findings', (request, response) => {
   return response.status(201).json(findingRow(finding))
 })
 
+app.delete('/api/findings/:id', (request, response) => {
+  const id = Number(request.params.id)
+  const currentUser = text(request.headers['x-current-user'])
+  
+  if (!id) return response.status(400).json({ error: 'id is required' })
+  if (!currentUser) return response.status(400).json({ error: 'x-current-user header is required' })
+
+  const finding = db.prepare('SELECT * FROM findings WHERE id = ?').get(id)
+  if (!finding) return response.status(404).json({ error: 'finding not found' })
+
+  const userRole = db.prepare('SELECT lane FROM roles WHERE name = ?').get(currentUser)
+  const isAdmin = userRole && userRole.lane.toLowerCase().includes('admin')
+
+  if (finding.contributor !== currentUser && !isAdmin) {
+    return response.status(403).json({ error: 'Forbidden: You can only delete your own findings unless you are an admin' })
+  }
+
+  db.prepare('DELETE FROM findings WHERE id = ?').run(id)
+  return response.status(200).json({ success: true })
+})
+
 app.get('/api/roles', (_request, response) => {
   const roles = db.prepare('SELECT id, name, lane, description FROM roles ORDER BY id ASC').all()
   return response.json(roles.map(roleRow))
 })
 
 app.post('/api/roles', (request, response) => {
+  const currentUser = text(request.headers['x-current-user'])
+  const rolesCount = db.prepare('SELECT COUNT(*) as count FROM roles').get().count
+  
+  if (rolesCount > 0) {
+    if (!currentUser) return response.status(403).json({ error: 'Must select a user profile to add roles' })
+    const userRole = db.prepare('SELECT lane FROM roles WHERE name = ?').get(currentUser)
+    const isAdmin = userRole && userRole.lane.toLowerCase().includes('admin')
+    if (!isAdmin) {
+       return response.status(403).json({ error: 'Only admins can add or edit team roles' })
+    }
+  }
+
   const id = Number(request.body?.id)
   const name = text(request.body?.name)
   const lane = text(request.body?.lane)

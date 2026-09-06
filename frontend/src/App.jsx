@@ -1,5 +1,5 @@
 import { useMemo, useState, useEffect } from 'react'
-import { Activity, Archive, ArrowUpRight, BookOpen, ChevronDown, ChevronRight, CircleHelp, FileText, LayoutGrid, Link2, Menu, Plus, Search, Settings2, SlidersHorizontal, Users, X } from 'lucide-react'
+import { Activity, Archive, ArrowUpRight, BookOpen, ChevronDown, ChevronRight, CircleHelp, FileText, LayoutGrid, Link2, Menu, Plus, Search, Settings2, SlidersHorizontal, Users, X, Lock, Trash2 } from 'lucide-react'
 import './App.css'
 
 const phases = [
@@ -14,9 +14,67 @@ const phases = [
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 
+function LockScreen({ onUnlock }) {
+  const [inputPin, setInputPin] = useState('')
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    setLoading(true)
+    setError('')
+    try {
+      const res = await fetch(`${API_URL}/api/roles`, {
+        headers: { 'x-access-pin': inputPin }
+      })
+      if (res.status === 401) throw new Error('Incorrect PIN')
+      if (!res.ok) throw new Error('Server error: ' + res.statusText)
+      
+      localStorage.setItem('fieldnotes_pin', inputPin)
+      onUnlock(inputPin)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100vh', backgroundColor: 'var(--bg-shell)', padding: '1rem' }}>
+      <div style={{ padding: '2.5rem 2rem', background: 'var(--surface)', borderRadius: '12px', boxShadow: '0 4px 12px rgba(0,0,0,0.05)', textAlign: 'center', maxWidth: '340px', width: '100%', border: '1px solid var(--border)' }}>
+        <div style={{ display: 'inline-flex', padding: '12px', borderRadius: '50%', backgroundColor: 'var(--bg-shell)', marginBottom: '1rem' }}>
+          <Lock size={24} style={{ color: 'var(--text-muted)' }} />
+        </div>
+        <h2 style={{ margin: '0 0 0.5rem 0' }}>Fieldnotes</h2>
+        <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginBottom: '2rem' }}>Enter the access PIN to view this research log.</p>
+        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+          <input 
+            type="password" 
+            value={inputPin} 
+            onChange={(e) => setInputPin(e.target.value)} 
+            placeholder="PIN Code" 
+            autoFocus 
+            style={{ padding: '0.75rem', borderRadius: '6px', border: '1px solid var(--border)', textAlign: 'center', fontSize: '1.2rem', letterSpacing: '4px' }}
+          />
+          {error && <span style={{ color: 'coral', fontSize: '0.85rem' }}>{error}</span>}
+          <button type="submit" className="primary-button" disabled={loading} style={{ justifyContent: 'center', marginTop: '0.5rem' }}>
+            {loading ? <Activity size={16} /> : 'Unlock Access'}
+          </button>
+        </form>
+      </div>
+    </div>
+  )
+}
+
 function App() {
   const [activeTab, setActiveTab] = useState('Scoping & Data Recon')
   
+  // Auth state
+  const [pin, setPin] = useState(localStorage.getItem('fieldnotes_pin') || '')
+  const [isAuthenticated, setIsAuthenticated] = useState(false)
+  const [authChecked, setAuthChecked] = useState(false)
+  const [currentUser, setCurrentUser] = useState(localStorage.getItem('fieldnotes_user') || '')
+
   // Data states
   const [findings, setFindings] = useState([])
   const [team, setTeam] = useState([])
@@ -32,35 +90,45 @@ function App() {
   const [composer, setComposer] = useState(false)
   const [search, setSearch] = useState('')
   const [mobileNav, setMobileNav] = useState(false)
-  const [form, setForm] = useState({ title: '', body: '', author: '', tags: '' })
+  const [form, setForm] = useState({ title: '', body: '', author: currentUser || '', tags: '' })
   
   const selectedPhase = phases.find((phase) => phase[0] === activeTab)
   const activeSlug = selectedPhase ? selectedPhase[3] : null
 
-  // 1. Fetch Team/Roles on mount
+  // 1. Fetch Team/Roles on mount and verify auth
   useEffect(() => {
     const fetchTeam = async () => {
       setLoadingTeam(true)
       setErrorTeam(null)
       try {
-        const res = await fetch(`${API_URL}/api/roles`)
+        const res = await fetch(`${API_URL}/api/roles`, {
+          headers: { 'x-access-pin': pin }
+        })
+        if (res.status === 401) {
+          setIsAuthenticated(false)
+          setAuthChecked(true)
+          return
+        }
         if (!res.ok) throw new Error('Failed to fetch team roles')
+        
+        setIsAuthenticated(true)
+        setAuthChecked(true)
         const data = await res.json()
         setTeam(data)
-        if (data.length > 0) {
-          setForm(prev => ({ ...prev, author: data[0].name }))
-        }
       } catch (err) {
         setErrorTeam(err.message)
+        setIsAuthenticated(true) 
+        setAuthChecked(true)
       } finally {
         setLoadingTeam(false)
       }
     }
     fetchTeam()
-  }, [])
+  }, [pin])
 
   // 2. Fetch Findings whenever activeTab changes
   useEffect(() => {
+    if (!isAuthenticated) return;
     const fetchFindings = async () => {
       setLoadingFindings(true)
       setErrorFindings(null)
@@ -69,7 +137,11 @@ function App() {
         if (activeSlug) {
           url += `?phase=${encodeURIComponent(activeSlug)}`
         }
-        const res = await fetch(url)
+        const res = await fetch(url, { headers: { 'x-access-pin': pin } })
+        if (res.status === 401) {
+          setIsAuthenticated(false)
+          return
+        }
         if (!res.ok) throw new Error('Failed to fetch findings')
         const data = await res.json()
         setFindings(data)
@@ -80,7 +152,7 @@ function App() {
       }
     }
     fetchFindings()
-  }, [activeSlug])
+  }, [activeSlug, isAuthenticated, pin])
 
   const enrichedTeam = useMemo(() => {
     return team.map(member => ({
@@ -112,7 +184,7 @@ function App() {
     try {
       const res = await fetch(`${API_URL}/api/findings`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'x-access-pin': pin },
         body: JSON.stringify({
           phase: activeSlug,
           contributor: form.author,
@@ -121,15 +193,56 @@ function App() {
           tags: form.tags
         })
       })
+      if (res.status === 401) {
+        setIsAuthenticated(false)
+        return
+      }
       if (!res.ok) throw new Error('Failed to save finding')
       const savedFinding = await res.json()
       
       setFindings([savedFinding, ...findings])
-      setForm({ title: '', body: '', author: enrichedTeam.length > 0 ? enrichedTeam[0].name : '', tags: '' })
+      setForm({ title: '', body: '', author: currentUser || (enrichedTeam.length > 0 ? enrichedTeam[0].name : ''), tags: '' })
       setComposer(false)
     } catch (err) {
       alert("Error adding finding: " + err.message)
     }
+  }
+
+  // 4. DELETE finding
+  const deleteFinding = async (id) => {
+    if (!currentUser) {
+      alert("Please select a user profile in the top right to delete findings.");
+      return;
+    }
+    if (!confirm("Are you sure you want to delete this finding? This cannot be undone.")) return;
+    try {
+      const res = await fetch(`${API_URL}/api/findings/${id}`, {
+        method: 'DELETE',
+        headers: { 'x-access-pin': pin, 'x-current-user': currentUser }
+      });
+      if (res.status === 401) {
+        setIsAuthenticated(false)
+        return
+      }
+      if (res.status === 403) {
+        alert("You are not authorized to delete this finding. You can only delete your own findings unless you are an Admin.");
+        return;
+      }
+      if (!res.ok) throw new Error('Failed to delete finding');
+      
+      setFindings(findings.filter(f => f.id !== id));
+    } catch(err) {
+      alert("Error deleting finding: " + err.message);
+    }
+  }
+
+  // Early returns for Auth
+  if (!authChecked) {
+    return <div style={{ display: 'flex', height: '100vh', alignItems: 'center', justifyContent: 'center' }}><Activity size={24} style={{ animation: 'spin 2s linear infinite', color: 'var(--text-muted)' }} /></div>
+  }
+
+  if (!isAuthenticated) {
+    return <LockScreen onUnlock={(newPin) => setPin(newPin)} />
   }
 
   return <div className="app-shell">
@@ -145,8 +258,25 @@ function App() {
           {errorFindings || errorTeam ? 'Disconnected' : loadingFindings || loadingTeam ? 'Syncing...' : 'Synced'}
         </span>
         <button className="icon-button" aria-label="Help"><CircleHelp size={18} /></button>
-        <button className="icon-button" aria-label="Settings"><Settings2 size={18} /></button>
-        <span className="top-avatar">KC</span>
+        <button className="icon-button" onClick={() => { localStorage.removeItem('fieldnotes_pin'); setPin(''); setIsAuthenticated(false); }} aria-label="Lock" title="Lock App"><Lock size={18} /></button>
+        
+        <select 
+          value={currentUser} 
+          onChange={(e) => {
+            setCurrentUser(e.target.value)
+            localStorage.setItem('fieldnotes_user', e.target.value)
+          }}
+          title="Select current user"
+          style={{ background: 'transparent', border: 'none', fontWeight: '600', fontSize: '0.9rem', color: 'var(--text-main)', outline: 'none', cursor: 'pointer', marginLeft: '0.5rem' }}
+        >
+          <option value="">Select User</option>
+          {enrichedTeam.map(member => <option key={member.name} value={member.name}>{member.name}</option>)}
+        </select>
+        {currentUser && (
+          <span className={`avatar small ${enrichedTeam.find(m => m.name === currentUser)?.color || 'gray'}`}>
+            {enrichedTeam.find(m => m.name === currentUser)?.initials || currentUser.slice(0, 2).toUpperCase()}
+          </span>
+        )}
       </div>
     </header>
     
@@ -179,9 +309,9 @@ function App() {
       
       <main className="main-content">
         {activeTab === 'overview' ? (
-          <Overview findings={findings} selectTab={selectTab} loading={loadingFindings} />
+          <Overview findings={findings} selectTab={selectTab} loading={loadingFindings} currentUser={currentUser} />
         ) : activeTab === 'Team & Roles' ? (
-          <TeamView team={enrichedTeam} setTeam={setTeam} loading={loadingTeam} error={errorTeam} />
+          <TeamView team={enrichedTeam} setTeam={setTeam} loading={loadingTeam} error={errorTeam} pin={pin} setIsAuthenticated={setIsAuthenticated} currentUser={currentUser} />
         ) : (
           <>
             <div className="content-header">
@@ -190,7 +320,7 @@ function App() {
                 <h1>{activeTab}</h1>
                 <p className="subtitle">Shared findings, decisions, and links for this lane.</p>
               </div>
-              <button className="primary-button" onClick={() => setComposer(true)}><Plus size={17} /> Add finding</button>
+              <button className="primary-button" onClick={() => { setForm({ title: '', body: '', author: currentUser || (enrichedTeam.length > 0 ? enrichedTeam[0].name : ''), tags: '' }); setComposer(true) }}><Plus size={17} /> Add finding</button>
             </div>
             
             <div className="toolbar">
@@ -228,7 +358,7 @@ function App() {
                   <p>Check your connection or make sure the backend is running. ({errorFindings})</p>
                 </div>
               ) : visibleFindings.length ? (
-                visibleFindings.map((finding) => <FindingCard key={finding.id || Math.random()} finding={finding} team={enrichedTeam} />)
+                visibleFindings.map((finding) => <FindingCard key={finding.id || Math.random()} finding={finding} team={enrichedTeam} currentUser={currentUser} deleteFinding={deleteFinding} />)
               ) : (
                 <div className="empty-state">
                   <FileText size={28} />
@@ -269,13 +399,17 @@ function App() {
   </div>
 }
 
-function FindingCard({ finding, team }) { 
+function FindingCard({ finding, team, currentUser, deleteFinding }) { 
   const authorName = finding.contributor || finding.author || 'Unknown';
   const author = team.find(t => t.name === authorName) || {};
   const initials = author.initials || authorName.substring(0, 2).toUpperCase();
   const color = author.color || 'gray';
   const time = finding.time || 'Recently';
   
+  const currentMember = team.find(t => t.name === currentUser);
+  const isAdmin = currentMember && currentMember.role && currentMember.role.toLowerCase().includes('admin');
+  const canDelete = currentUser === authorName || isAdmin;
+
   let tags = [];
   if (Array.isArray(finding.tags)) tags = finding.tags;
   else if (typeof finding.tags === 'string') tags = finding.tags.split(',').map(t => t.trim()).filter(Boolean);
@@ -285,7 +419,13 @@ function FindingCard({ finding, team }) {
       <div className="finding-meta">
         <span className={`avatar ${color}`}>{initials}</span>
         <span><strong>{authorName}</strong><small>{time}</small></span>
-        <button className="card-more" aria-label="More options">···</button>
+        {canDelete ? (
+          <button className="icon-button" onClick={() => deleteFinding(finding.id)} aria-label="Delete finding" style={{ marginLeft: 'auto', color: 'var(--text-muted)' }}>
+            <Trash2 size={16} />
+          </button>
+        ) : (
+          <button className="card-more" aria-label="More options" style={{ marginLeft: 'auto' }}>···</button>
+        )}
       </div>
       <h2>{finding.title}</h2>
       <p>{finding.body}</p>
@@ -297,13 +437,13 @@ function FindingCard({ finding, team }) {
   )
 }
 
-function Overview({ findings, selectTab, loading }) { 
+function Overview({ findings, selectTab, loading, currentUser }) { 
   return (
     <div className="overview">
       <div className="content-header">
         <div>
           <div className="eyebrow"><span className="pulse-dot" /> Team workspace</div>
-          <h1>Good morning, Kunal</h1>
+          <h1>Good morning, {currentUser ? currentUser.split(' ')[0] : 'Team'}</h1>
           <p className="subtitle">Here is where the heatwave prototype stands today.</p>
         </div>
         <button className="secondary-button"><Archive size={16} /> Export log</button>
@@ -346,11 +486,14 @@ function Overview({ findings, selectTab, loading }) {
   ) 
 }
 
-function TeamView({ team, setTeam, loading, error }) { 
+function TeamView({ team, setTeam, loading, error, pin, setIsAuthenticated, currentUser }) { 
   const [newMember, setNewMember] = useState({ name: '', role: '' })
   const [adding, setAdding] = useState(false)
   
-  // 4. POST new team role
+  const currentMember = team.find(t => t.name === currentUser);
+  const isAdmin = team.length === 0 || (currentMember && currentMember.role && currentMember.role.toLowerCase().includes('admin'));
+
+  // 5. POST new team role
   const addMember = async (event) => { 
     event.preventDefault(); 
     if (!newMember.name.trim()) return; 
@@ -358,9 +501,17 @@ function TeamView({ team, setTeam, loading, error }) {
     try {
       const res = await fetch(`${API_URL}/api/roles`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'x-access-pin': pin, 'x-current-user': currentUser },
         body: JSON.stringify({ name: newMember.name, lane: newMember.role })
       })
+      if (res.status === 401) {
+        setIsAuthenticated(false)
+        return
+      }
+      if (res.status === 403) {
+        alert("You are not authorized to add team members. Only admins can do this.");
+        return;
+      }
       if (!res.ok) throw new Error('Failed to add role')
       const savedRole = await res.json()
       
@@ -381,7 +532,9 @@ function TeamView({ team, setTeam, loading, error }) {
           <h1>Team & Roles</h1>
           <p className="subtitle">Keep the lanes clear so findings always have an owner.</p>
         </div>
-        <button className="primary-button" onClick={() => document.querySelector('.team-form input')?.focus()}><Plus size={17} /> Add teammate</button>
+        {isAdmin && (
+          <button className="primary-button" onClick={() => document.querySelector('.team-form input')?.focus()}><Plus size={17} /> Add teammate</button>
+        )}
       </div>
       <section className="team-card">
         <div className="team-card-heading">
@@ -417,15 +570,17 @@ function TeamView({ team, setTeam, loading, error }) {
           </div>
         )}
       </section>
-      <form className="team-form" onSubmit={addMember}>
-        <div><span className="eyebrow">Quick add</span><h2>Bring someone in</h2></div>
-        <input value={newMember.name} onChange={(event) => setNewMember({ ...newMember, name: event.target.value })} placeholder="Teammate name" disabled={adding} />
-        <input value={newMember.role} onChange={(event) => setNewMember({ ...newMember, role: event.target.value })} placeholder="Role or lane" disabled={adding} />
-        <button className="secondary-button" type="submit" disabled={adding}>
-          {adding ? <Activity size={16} /> : <Plus size={16} />} 
-          {adding ? ' Adding...' : ' Add'}
-        </button>
-      </form>
+      {isAdmin && (
+        <form className="team-form" onSubmit={addMember}>
+          <div><span className="eyebrow">Quick add</span><h2>Bring someone in</h2></div>
+          <input value={newMember.name} onChange={(event) => setNewMember({ ...newMember, name: event.target.value })} placeholder="Teammate name" disabled={adding} />
+          <input value={newMember.role} onChange={(event) => setNewMember({ ...newMember, role: event.target.value })} placeholder="Role or lane" disabled={adding} />
+          <button className="secondary-button" type="submit" disabled={adding}>
+            {adding ? <Activity size={16} /> : <Plus size={16} />} 
+            {adding ? ' Adding...' : ' Add'}
+          </button>
+        </form>
+      )}
     </div>
   )
 }
