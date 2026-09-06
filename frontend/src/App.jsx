@@ -39,11 +39,31 @@ function timeAgo(dateStr) {
 
 function LockScreen({ onUnlock }) {
   const [inputPin, setInputPin] = useState('')
+  const [selectedName, setSelectedName] = useState('')
+  const [teamNames, setTeamNames] = useState([])
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [loadingNames, setLoadingNames] = useState(true)
+
+  // Fetch team names (public endpoint, no PIN needed)
+  useEffect(() => {
+    const fetchNames = async () => {
+      try {
+        const res = await fetch(`${API_URL}/api/team-names`)
+        if (res.ok) {
+          const names = await res.json()
+          setTeamNames(names)
+        }
+      } catch (_) { /* silent */ }
+      finally { setLoadingNames(false) }
+    }
+    fetchNames()
+  }, [])
 
   const handleSubmit = async (e) => {
     e.preventDefault()
+    if (!selectedName) { setError('Please select who you are'); return }
+    if (!inputPin) { setError('Please enter the PIN'); return }
     setLoading(true)
     setError('')
     try {
@@ -54,7 +74,8 @@ function LockScreen({ onUnlock }) {
       if (!res.ok) throw new Error('Server error: ' + res.statusText)
       
       localStorage.setItem('fieldnotes_pin', inputPin)
-      onUnlock(inputPin)
+      localStorage.setItem('fieldnotes_user', selectedName)
+      onUnlock(inputPin, selectedName)
     } catch (err) {
       setError(err.message)
     } finally {
@@ -64,24 +85,48 @@ function LockScreen({ onUnlock }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100vh', backgroundColor: 'var(--bg-shell)', padding: '1rem' }}>
-      <div style={{ padding: '2.5rem 2rem', background: 'var(--surface)', borderRadius: '12px', boxShadow: '0 4px 12px rgba(0,0,0,0.05)', textAlign: 'center', maxWidth: '340px', width: '100%', border: '1px solid var(--border)' }}>
+      <div style={{ padding: '2.5rem 2rem', background: 'var(--surface)', borderRadius: '12px', boxShadow: '0 4px 12px rgba(0,0,0,0.05)', textAlign: 'center', maxWidth: '380px', width: '100%', border: '1px solid var(--border)' }}>
         <div style={{ display: 'inline-flex', padding: '12px', borderRadius: '50%', backgroundColor: 'var(--bg-shell)', marginBottom: '1rem' }}>
           <Lock size={24} style={{ color: 'var(--text-muted)' }} />
         </div>
         <h2 style={{ margin: '0 0 0.5rem 0' }}>Fieldnotes</h2>
-        <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginBottom: '2rem' }}>Enter the access PIN to view this research log.</p>
-        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-          <input 
-            type="password" 
-            value={inputPin} 
-            onChange={(e) => setInputPin(e.target.value)} 
-            placeholder="PIN Code" 
-            autoFocus 
-            style={{ padding: '0.75rem', borderRadius: '6px', border: '1px solid var(--border)', textAlign: 'center', fontSize: '1.2rem', letterSpacing: '4px' }}
-          />
-          {error && <span style={{ color: 'coral', fontSize: '0.85rem' }}>{error}</span>}
+        <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginBottom: '1.5rem' }}>Sign in to access the research log.</p>
+        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1rem', textAlign: 'left' }}>
+          <label style={{ fontSize: '11px', fontWeight: '700', color: '#6e7884', textTransform: 'uppercase', letterSpacing: '.05em' }}>
+            Who are you?
+            {loadingNames ? (
+              <div style={{ padding: '0.75rem', fontSize: '12px', color: 'var(--text-muted)' }}>Loading team...</div>
+            ) : teamNames.length > 0 ? (
+              <select 
+                value={selectedName} 
+                onChange={(e) => setSelectedName(e.target.value)}
+                style={{ display: 'block', width: '100%', padding: '0.75rem', borderRadius: '6px', border: '1px solid var(--border)', fontSize: '0.95rem', marginTop: '6px', cursor: 'pointer' }}
+              >
+                <option value="">Select your name...</option>
+                {teamNames.map(name => <option key={name} value={name}>{name}</option>)}
+              </select>
+            ) : (
+              <input 
+                value={selectedName}
+                onChange={(e) => setSelectedName(e.target.value)}
+                placeholder="Enter your name"
+                style={{ display: 'block', width: '100%', padding: '0.75rem', borderRadius: '6px', border: '1px solid var(--border)', fontSize: '0.95rem', marginTop: '6px', boxSizing: 'border-box' }}
+              />
+            )}
+          </label>
+          <label style={{ fontSize: '11px', fontWeight: '700', color: '#6e7884', textTransform: 'uppercase', letterSpacing: '.05em' }}>
+            Access PIN
+            <input 
+              type="password" 
+              value={inputPin} 
+              onChange={(e) => setInputPin(e.target.value)} 
+              placeholder="••••" 
+              style={{ display: 'block', width: '100%', padding: '0.75rem', borderRadius: '6px', border: '1px solid var(--border)', textAlign: 'center', fontSize: '1.2rem', letterSpacing: '4px', marginTop: '6px', boxSizing: 'border-box' }}
+            />
+          </label>
+          {error && <span style={{ color: 'coral', fontSize: '0.85rem', textAlign: 'center' }}>{error}</span>}
           <button type="submit" className="primary-button" disabled={loading} style={{ justifyContent: 'center', marginTop: '0.5rem' }}>
-            {loading ? <Activity size={16} /> : 'Unlock Access'}
+            {loading ? <Activity size={16} /> : 'Sign In'}
           </button>
         </form>
       </div>
@@ -294,7 +339,7 @@ function App() {
   }
 
   if (!isAuthenticated) {
-    return <LockScreen onUnlock={(newPin) => setPin(newPin)} />
+    return <LockScreen onUnlock={(newPin, userName) => { setPin(newPin); setCurrentUser(userName); }} />
   }
 
   return <div className="app-shell">

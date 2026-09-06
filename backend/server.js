@@ -48,6 +48,7 @@ app.use(express.json({ limit: '100kb' }))
 app.use((request, response, next) => {
   if (!ACCESS_PIN) return next() // If no pin is configured on the backend, skip auth
   if (request.path === '/health') return next()
+  if (request.path === '/api/team-names') return next() // Public: needed for lock screen
   
   const providedPin = request.headers['x-access-pin']
   if (providedPin === ACCESS_PIN) return next()
@@ -61,6 +62,12 @@ const text = (value) => typeof value === 'string' ? value.trim() : ''
 const tagsJson = (tags) => JSON.stringify(Array.isArray(tags) ? tags.map(text).filter(Boolean) : text(tags).split(',').map((tag) => tag.trim()).filter(Boolean))
 
 app.get('/health', (_request, response) => response.json({ ok: true }))
+
+// Public: returns only names for the lock screen user picker
+app.get('/api/team-names', (_request, response) => {
+  const rows = db.prepare('SELECT name FROM roles ORDER BY id ASC').all()
+  return response.json(rows.map(r => r.name))
+})
 
 app.get('/api/findings', (request, response) => {
   const phase = text(request.query.phase)
